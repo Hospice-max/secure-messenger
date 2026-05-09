@@ -55,17 +55,29 @@ export default function Chat() {
       });
       const data = await response.json();
       if (response.ok) {
-        const messagesWithDecrypting = data.messages.map((msg: ChatMessage) => ({
-          ...msg,
-          isDecrypting: true,
-          decryptedContent: msg.type === 'image' ? undefined : undefined
-        }));
+        const messagesWithDecrypting = data.messages.map((msg: ChatMessage) => {
+          // Vérifier si le message est déjà déchiffré
+          const existingMessage = messages.find(m => m._id === msg._id);
+          if (existingMessage && existingMessage.decryptedContent && !existingMessage.isDecrypting) {
+            return existingMessage; // Garder le message déjà déchiffré
+          }
+          return {
+            ...msg,
+            isDecrypting: true,
+            decryptedContent: msg.type === 'image' ? undefined : undefined
+          };
+        });
+        
         setMessages(messagesWithDecrypting.reverse());
 
+        // Déchiffrer uniquement les nouveaux messages
         data.messages.forEach((msg: ChatMessage, index: number) => {
-          setTimeout(() => {
-            decryptMessage(msg, index);
-          }, 2000);
+          const existingMessage = messages.find(m => m._id === msg._id);
+          if (!existingMessage || existingMessage.isDecrypting) {
+            setTimeout(() => {
+              decryptMessage(msg, index);
+            }, 100);
+          }
         });
       }
     } catch (error) {
@@ -82,9 +94,9 @@ export default function Chat() {
       
       let decryptedContent: string;
       if (msg.type === 'image') {
-        decryptedContent = EncryptionService.decryptImage(encryptedData, user!.id);
+        decryptedContent = EncryptionService.decryptImage(encryptedData, user!.id, token || undefined);
       } else {
-        decryptedContent = EncryptionService.decrypt(encryptedData, user!.id);
+        decryptedContent = EncryptionService.decrypt(encryptedData, user!.id, token || undefined);
       }
       
       setMessages(prev => prev.map((message, i) => 
@@ -107,7 +119,7 @@ export default function Chat() {
 
     setIsLoading(true);
     try {
-      const encryptedData = EncryptionService.encrypt(newMessage, user!.id);
+      const encryptedData = EncryptionService.encrypt(newMessage, user!.id, token || undefined);
 
       const response = await fetch('/api/messages', {
         method: 'POST',
@@ -155,7 +167,7 @@ export default function Chat() {
       }
 
       const uploadData = await uploadResponse.json();
-      const encryptedImage = EncryptionService.encryptImage(uploadData.imageData, user!.id);
+      const encryptedImage = EncryptionService.encryptImage(uploadData.imageData, user!.id, token || undefined);
 
       const messageResponse = await fetch('/api/messages', {
         method: 'POST',

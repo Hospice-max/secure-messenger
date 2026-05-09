@@ -6,14 +6,19 @@ export interface EncryptedData {
 }
 
 export class EncryptionService {
-  private static getEncryptionKey(userId: string): string {
-    // En production, utiliser une méthode plus sécurisée pour stocker/générer les clés
+  private static getEncryptionKey(userId: string, token?: string): string {
+    // Utiliser le token JWT comme clé de chiffrement pour plus de sécurité
+    if (token) {
+      // Hacher le token pour créer une clé stable
+      return CryptoJS.SHA256(token).toString();
+    }
+    // Fallback: utiliser une méthode plus sécurisée pour stocker/générer les clés
     // Pour cette démo, nous utilisons une clé dérivée de l'ID utilisateur
-    return `${userId}-secure-key-2024`;
+    return CryptoJS.SHA256(`${userId}-secure-key-2024`).toString();
   }
 
-  static encrypt(text: string, userId: string): EncryptedData {
-    const key = this.getEncryptionKey(userId);
+  static encrypt(text: string, userId: string, token?: string): EncryptedData {
+    const key = this.getEncryptionKey(userId, token);
     const iv = CryptoJS.lib.WordArray.random(16);
     
     const encrypted = CryptoJS.AES.encrypt(text, key, {
@@ -28,8 +33,8 @@ export class EncryptionService {
     };
   }
 
-  static decrypt(encryptedData: EncryptedData, userId: string): string {
-    const key = this.getEncryptionKey(userId);
+  static decrypt(encryptedData: EncryptedData, userId: string, token?: string): string {
+    const key = this.getEncryptionKey(userId, token);
     const iv = CryptoJS.enc.Hex.parse(encryptedData.iv);
     
     const decrypted = CryptoJS.AES.decrypt(encryptedData.data, key, {
@@ -41,11 +46,11 @@ export class EncryptionService {
     return decrypted.toString(CryptoJS.enc.Utf8);
   }
 
-  static encryptImage(imageData: string, userId: string): EncryptedData {
-    return this.encrypt(imageData, userId);
+  static encryptImage(imageData: string, userId: string, token?: string): EncryptedData {
+    return this.encrypt(imageData, userId, token);
   }
 
-  static decryptImage(encryptedData: EncryptedData, userId: string): string {
-    return this.decrypt(encryptedData, userId);
+  static decryptImage(encryptedData: EncryptedData, userId: string, token?: string): string {
+    return this.decrypt(encryptedData, userId, token);
   }
 }
