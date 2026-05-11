@@ -43,7 +43,14 @@ export class EncryptionService {
       padding: CryptoJS.pad.Pkcs7
     });
 
-    return decrypted.toString(CryptoJS.enc.Utf8);
+    const decryptedStr = decrypted.toString(CryptoJS.enc.Utf8);
+    
+    // Handle malformed UTF-8 data
+    if (!decryptedStr || decryptedStr.includes('')) {
+      throw new Error('Malformed UTF-8 data');
+    }
+    
+    return decryptedStr;
   }
 
   static encryptImage(imageData: string, userId: string, token?: string): EncryptedData {

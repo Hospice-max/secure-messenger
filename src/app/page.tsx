@@ -10,7 +10,7 @@ export default function Home() {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-xl">Chargement...</div>
+        <div className="text-xl text-black">Chargement...</div>
       </div>
     );
   }
