@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "socket-server": "tsx ./socket-server.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -31,6 +32,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.5",
     "tailwindcss": "^4",
+    "tsx": "^4.20.0",
     "typescript": "^5"
   }
 }

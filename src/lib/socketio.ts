@@ -1,50 +1,66 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { io, Socket } from 'socket.io-client';
 
-export interface SocketMessage {
-  type: 'message' | 'typing' | 'user_status';
-  data: unknown;
-}
+const SOCKET_SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_SERVER_URL || 'http://localhost:4000';
 
-// Simple polling implementation for now
+export type SocketEvent = 'new_message' | 'message_sent' | 'user_typing' | 'user_stop_typing';
+
 export function useSocketIO(token: string | null) {
-  const [socket, setSocket] = useState<{ connected: boolean } | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const messageCallbacksRef = useRef<Map<string, ((data: unknown) => void)[]>>(new Map());
 
   useEffect(() => {
-    setTimeout(() => {
+    if (!token) {
+      setSocket(null);
+      setIsConnected(false);
+      return;
+    }
+
+    const socketClient = io(SOCKET_SERVER_URL, {
+      auth: { token },
+      transports: ['websocket'],
+      autoConnect: true,
+    });
+
+    socketClient.on('connect', () => {
       setIsConnected(true);
-      setSocket({ connected: true });
-    }, 0);
+    });
+
+    socketClient.on('disconnect', () => {
+      setIsConnected(false);
+    });
+
+    socketClient.on('connect_error', (error) => {
+      console.error('Socket connect error:', error);
+    });
+
+    setSocket(socketClient);
+
+    return () => {
+      socketClient.disconnect();
+      setSocket(null);
+      setIsConnected(false);
+    };
   }, [token]);
 
-  const sendMessage = (_type: string, data: unknown) => {
-    // Mock implementation - messages are sent via API routes
-    console.log('Mock socket send:', _type, data);
-  };
+  const sendMessage = useCallback(
+    (event: string, data: unknown) => {
+      socket?.emit(event, data);
+    },
+    [socket]
+  );
 
-  const onMessage = (type: string, callback: (data: unknown) => void) => {
-    if (!messageCallbacksRef.current.has(type)) {
-      messageCallbacksRef.current.set(type, []);
-    }
-    messageCallbacksRef.current.get(type)!.push(callback);
-  };
+  const onMessage = useCallback(
+    (event: string, callback: (data: unknown) => void) => {
+      socket?.on(event, callback);
+      return () => {
+        socket?.off(event, callback);
+      };
+    },
+    [socket]
+  );
 
-  const offMessage = (type: string, callback?: (data: unknown) => void) => {
-    if (callback) {
-      const callbacks = messageCallbacksRef.current.get(type);
-      if (callbacks) {
-        const index = callbacks.indexOf(callback);
-        if (index > -1) {
-          callbacks.splice(index, 1);
-        }
-      }
-    } else {
-      messageCallbacksRef.current.delete(type);
-    }
-  };
-
-  return { socket, isConnected, sendMessage, onMessage, offMessage };
+  return { socket, isConnected, sendMessage, onMessage };
 }

@@ -6,23 +6,18 @@ export interface EncryptedData {
 }
 
 export class EncryptionService {
-  private static getEncryptionKey(userId: string, token?: string): string {
-    // Utiliser le token JWT comme clé de chiffrement pour plus de sécurité
-    if (token) {
-      // Hacher le token pour créer une clé stable
-      return CryptoJS.SHA256(token).toString();
-    }
-    // Fallback: utiliser une méthode plus sécurisée pour stocker/générer les clés
-    // Pour cette démo, nous utilisons une clé dérivée de l'ID utilisateur
-    return CryptoJS.SHA256(`${userId}-secure-key-2024`).toString();
+  private static getSharedEncryptionKey(userA: string, userB: string): string {
+    const sortedIds = [userA, userB].sort().join('|');
+    const keyMaterial = `${sortedIds}|secure-messenger-shared-key`;
+    return CryptoJS.SHA256(keyMaterial).toString();
   }
 
-  static encrypt(text: string, userId: string, token?: string): EncryptedData {
-    const key = this.getEncryptionKey(userId, token);
+  static encrypt(text: string, senderId: string, receiverId: string): EncryptedData {
+    const key = this.getSharedEncryptionKey(senderId, receiverId);
     const iv = CryptoJS.lib.WordArray.random(16);
-    
+
     const encrypted = CryptoJS.AES.encrypt(text, key, {
-      iv: iv,
+      iv,
       mode: CryptoJS.mode.CBC,
       padding: CryptoJS.pad.Pkcs7
     });
@@ -33,31 +28,29 @@ export class EncryptionService {
     };
   }
 
-  static decrypt(encryptedData: EncryptedData, userId: string, token?: string): string {
-    const key = this.getEncryptionKey(userId, token);
+  static decrypt(encryptedData: EncryptedData, userId: string, peerId: string): string {
+    const key = this.getSharedEncryptionKey(userId, peerId);
     const iv = CryptoJS.enc.Hex.parse(encryptedData.iv);
-    
+
     const decrypted = CryptoJS.AES.decrypt(encryptedData.data, key, {
-      iv: iv,
+      iv,
       mode: CryptoJS.mode.CBC,
       padding: CryptoJS.pad.Pkcs7
     });
 
     const decryptedStr = decrypted.toString(CryptoJS.enc.Utf8);
-    
-    // Handle malformed UTF-8 data
-    if (!decryptedStr || decryptedStr.includes('')) {
-      throw new Error('Malformed UTF-8 data');
+    if (!decryptedStr) {
+      throw new Error('Unable to decrypt message');
     }
-    
+
     return decryptedStr;
   }
 
-  static encryptImage(imageData: string, userId: string, token?: string): EncryptedData {
-    return this.encrypt(imageData, userId, token);
+  static encryptImage(imageData: string, senderId: string, receiverId: string): EncryptedData {
+    return this.encrypt(imageData, senderId, receiverId);
   }
 
-  static decryptImage(encryptedData: EncryptedData, userId: string, token?: string): string {
-    return this.decrypt(encryptedData, userId, token);
+  static decryptImage(encryptedData: EncryptedData, userId: string, peerId: string): string {
+    return this.decrypt(encryptedData, userId, peerId);
   }
 }

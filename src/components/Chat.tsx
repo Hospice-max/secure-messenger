@@ -20,7 +20,7 @@ interface ChatMessage extends Message {
 
 export default function Chat() {
   const { user, token, logout } = useAuth();
-  const { sendMessage: socketSendMessage } = useSocketIO(token);
+  const { socket, sendMessage: socketSendMessage } = useSocketIO(token);
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -32,34 +32,40 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const decryptMessage = useCallback((msg: ChatMessage, index: number) => {
+  const decryptMessage = useCallback((msg: ChatMessage) => {
     try {
       const encryptedData: EncryptedData = {
         data: msg.encryptedContent,
         iv: msg.iv
       };
-      
+
+      const partnerId = msg.senderId === user?.id ? msg.receiverId : msg.senderId;
       let decryptedContent: string;
+
       if (msg.type === 'image') {
-        decryptedContent = EncryptionService.decryptImage(encryptedData, user!.id, token || undefined);
+        decryptedContent = EncryptionService.decryptImage(encryptedData, user!.id, partnerId);
       } else {
-        decryptedContent = EncryptionService.decrypt(encryptedData, user!.id, token || undefined);
+        decryptedContent = EncryptionService.decrypt(encryptedData, user!.id, partnerId);
       }
-      
-      setMessages(prev => prev.map((message, i) => 
-        i === index 
+
+      setMessages(prev => prev.map((message) =>
+        message._id === msg._id
           ? { ...message, isDecrypting: false, decryptedContent }
           : message
       ));
     } catch (error) {
       console.error('Error decrypting message:', error);
-      setMessages(prev => prev.map((message, i) => 
-        i === index 
+      setMessages(prev => prev.map((message) =>
+        message._id === msg._id
           ? { ...message, isDecrypting: false, decryptedContent: '[Erreur de déchiffrement]' }
           : message
       ));
     }
   }, [user, token]);
+
+  const scheduleDecryption = useCallback((msg: ChatMessage) => {
+    setTimeout(() => decryptMessage(msg), 2000);
+  }, [decryptMessage]);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -77,12 +83,6 @@ export default function Chat() {
     }
   }, [token]);
 
-  const messagesRef = useRef<ChatMessage[]>([]);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
   const fetchMessages = useCallback(async () => {
     if (!selectedUser) return;
 
@@ -94,84 +94,79 @@ export default function Chat() {
       });
       const data = await response.json();
       if (response.ok) {
-        const messagesWithDecrypting = data.messages.map((msg: ChatMessage) => {
-          const existingMessage = messagesRef.current.find(m => m._id === msg._id);
-          if (existingMessage && existingMessage.decryptedContent && !existingMessage.isDecrypting) {
-            return existingMessage;
-          }
-          return {
+        const messagesWithDecrypting = data.messages
+          .map((msg: ChatMessage) => ({
             ...msg,
             isDecrypting: true,
-            decryptedContent: msg.type === 'image' ? undefined : undefined
-          };
-        });
-        
-        setMessages(messagesWithDecrypting.reverse());
-        
-        // Set the last message ID to track new messages
-        if (data.messages.length > 0) {
-          setLastMessageId(data.messages[0]._id);
+            decryptedContent: undefined
+          }))
+          .reverse();
+
+        setMessages(messagesWithDecrypting);
+
+        if (messagesWithDecrypting.length > 0) {
+          setLastMessageId(messagesWithDecrypting[0]._id);
         }
 
-        data.messages.forEach((msg: ChatMessage, index: number) => {
-          const existingMessage = messagesRef.current.find(m => m._id === msg._id);
-          if (!existingMessage || existingMessage.isDecrypting) {
-            setTimeout(() => {
-              decryptMessage(msg, index);
-            }, 100);
-          }
+        messagesWithDecrypting.forEach((msg: ChatMessage) => {
+          scheduleDecryption(msg);
         });
       }
     } catch (error) {
       console.error('Error fetching messages:', error);
     }
-  }, [selectedUser, token, decryptMessage]);
-
+  }, [selectedUser, token, scheduleDecryption]);
 
   const sendMessage = async () => {
-    if (!newMessage.trim() || !selectedUser) return;
+    if (!newMessage.trim() || !selectedUser || !user) return;
 
     setIsLoading(true);
     try {
-      const encryptedData = EncryptionService.encrypt(newMessage, user!.id, token || undefined);
+      const encryptedData = EncryptionService.encrypt(newMessage, user.id, selectedUser._id);
 
-      // Create optimistic message immediately
       const optimisticMessage: ChatMessage = {
         _id: `temp-${Date.now()}`,
-        senderId: user!.id,
+        senderId: user.id,
         receiverId: selectedUser._id,
         encryptedContent: encryptedData.data,
         iv: encryptedData.iv,
         type: 'text',
         status: 'sent',
         timestamp: new Date(),
-        isDecrypting: false,
-        decryptedContent: newMessage
+        isDecrypting: true,
+        decryptedContent: undefined
       };
 
-      // Add message immediately to UI
       setMessages(prev => [optimisticMessage, ...prev]);
       setNewMessage('');
+      scheduleDecryption(optimisticMessage);
 
-      // Send via API route
-      const response = await fetch('/api/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      if (socket) {
+        socketSendMessage('send_message', {
           receiverId: selectedUser._id,
           encryptedContent: encryptedData.data,
           iv: encryptedData.iv,
           type: 'text'
-        }),
-      });
+        });
+      } else {
+        const response = await fetch('/api/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            receiverId: selectedUser._id,
+            encryptedContent: encryptedData.data,
+            iv: encryptedData.iv,
+            type: 'text'
+          }),
+        });
 
-      if (!response.ok) {
-        // Remove optimistic message if send failed
-        setMessages(prev => prev.filter(msg => msg._id !== optimisticMessage._id));
-        console.error('Failed to send message');
+        if (!response.ok) {
+          setMessages(prev => prev.filter(msg => msg._id !== optimisticMessage._id));
+          console.error('Failed to send message');
+        }
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -179,9 +174,72 @@ export default function Chat() {
     setIsLoading(false);
   };
 
+  useEffect(() => {
+    if (socket && user) {
+      socketSendMessage('join_room', user.id);
+      return () => {
+        socketSendMessage('leave_room', user.id);
+      };
+    }
+  }, [socket, user, socketSendMessage]);
+
+  useEffect(() => {
+    if (!socket || !user) return;
+
+    const handleNewMessage = (data: ChatMessage) => {
+      const incomingMessage: ChatMessage = {
+        ...data,
+        _id: data._id,
+        isDecrypting: true,
+        decryptedContent: undefined
+      };
+
+      setMessages(prev => {
+        if (prev.some(msg => msg._id === incomingMessage._id)) {
+          return prev;
+        }
+        return [incomingMessage, ...prev];
+      });
+
+      scheduleDecryption(incomingMessage);
+      setLastMessageId(incomingMessage._id);
+    };
+
+    const handleMessageSent = (data: ChatMessage) => {
+      setMessages(prev => prev.map(msg =>
+        msg._id.startsWith('temp-') && msg.receiverId === data.receiverId && msg.encryptedContent === data.encryptedContent
+          ? { ...msg, _id: data._id, status: 'sent' }
+          : msg
+      ));
+    };
+
+    socket.on('new_message', handleNewMessage);
+    socket.on('message_sent', handleMessageSent);
+
+    return () => {
+      socket.off('new_message', handleNewMessage);
+      socket.off('message_sent', handleMessageSent);
+    };
+  }, [socket, user, scheduleDecryption]);
+
+  useEffect(() => {
+    setTimeout(() => fetchUsers(), 0);
+  }, [fetchUsers]);
+
+  useEffect(() => {
+    if (selectedUser) {
+      if (!messagesLoaded) {
+        fetchMessages();
+        setTimeout(() => setMessagesLoaded(true), 0);
+      }
+    } else {
+      setTimeout(() => setMessagesLoaded(false), 0);
+    }
+  }, [selectedUser, messagesLoaded, fetchMessages]);
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !selectedUser) return;
+    if (!file || !selectedUser || !user) return;
 
     setIsLoading(true);
     try {
@@ -201,24 +259,50 @@ export default function Chat() {
       }
 
       const uploadData = await uploadResponse.json();
-      const encryptedImage = EncryptionService.encryptImage(uploadData.imageData, user!.id, token || undefined);
+      const encryptedImage = EncryptionService.encryptImage(uploadData.imageData, user.id, selectedUser._id);
 
-      const messageResponse = await fetch('/api/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      const optimisticMessage: ChatMessage = {
+        _id: `temp-${Date.now()}`,
+        senderId: user.id,
+        receiverId: selectedUser._id,
+        encryptedContent: encryptedImage.data,
+        iv: encryptedImage.iv,
+        type: 'image',
+        status: 'sent',
+        timestamp: new Date(),
+        isDecrypting: true,
+        decryptedContent: undefined
+      };
+
+      setMessages(prev => [optimisticMessage, ...prev]);
+      scheduleDecryption(optimisticMessage);
+
+      if (socket) {
+        socketSendMessage('send_message', {
           receiverId: selectedUser._id,
           encryptedContent: encryptedImage.data,
           iv: encryptedImage.iv,
           type: 'image'
-        }),
-      });
+        });
+      } else {
+        const messageResponse = await fetch('/api/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            receiverId: selectedUser._id,
+            encryptedContent: encryptedImage.data,
+            iv: encryptedImage.iv,
+            type: 'image'
+          }),
+        });
 
-      if (messageResponse.ok) {
-        fetchMessages();
+        if (!messageResponse.ok) {
+          setMessages(prev => prev.filter(msg => msg._id !== optimisticMessage._id));
+          console.error('Failed to send image');
+        }
       }
     } catch (error) {
       console.error('Error sending image:', error);
@@ -237,76 +321,6 @@ export default function Chat() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
-
-  useEffect(() => {
-    setTimeout(() => fetchUsers(), 0);
-  }, [fetchUsers]);
-
-  useEffect(() => {
-    if (selectedUser) {
-      // Load initial messages only once
-      if (!messagesLoaded) {
-        fetchMessages();
-        setTimeout(() => setMessagesLoaded(true), 0);
-      }
-      
-      socketSendMessage('join_room', selectedUser._id);
-      
-      return () => {
-        socketSendMessage('leave_room', selectedUser._id);
-      };
-    } else {
-      setTimeout(() => setMessagesLoaded(false), 0);
-    }
-  }, [selectedUser, socketSendMessage, messagesLoaded, fetchMessages]);
-
-  // Check for new messages only when needed
-  const checkForNewMessages = useCallback(async () => {
-    if (!selectedUser) return;
-
-    try {
-      const response = await fetch(`/api/messages?receiverId=${selectedUser._id}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-      const data = await response.json();
-      if (response.ok) {
-        const latestMessage = data.messages[0];
-        if (latestMessage && (!lastMessageId || latestMessage._id !== lastMessageId)) {
-          // New message detected
-          const messageWithDecrypting = {
-            ...latestMessage,
-            isDecrypting: true,
-            decryptedContent: latestMessage.type === 'image' ? undefined : undefined
-          };
-          
-          setMessages(prev => {
-            // Avoid duplicates
-            const exists = prev.some(msg => msg._id === latestMessage._id);
-            if (exists) return prev;
-            return [messageWithDecrypting, ...prev];
-          });
-          
-          setLastMessageId(latestMessage._id);
-          
-          setTimeout(() => {
-            decryptMessage(messageWithDecrypting, 0);
-          }, 100);
-        }
-      }
-    } catch (error) {
-      console.error('Error checking new messages:', error);
-    }
-  }, [selectedUser, token, lastMessageId, decryptMessage]);
-
-  // Check for new messages after sending a message
-  useEffect(() => {
-    if (messages.length > 0 && messages[0]._id.startsWith('temp-')) {
-      // Message was just sent optimistically, check for real message
-      setTimeout(checkForNewMessages, 1000);
-    }
-  }, [messages, checkForNewMessages]);
 
   const filteredUsers = users.filter(u =>
     u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -403,8 +417,11 @@ export default function Chat() {
                   >
                     {message.type === 'image' ? (
                       message.isDecrypting ? (
-                        <div className="flex items-center justify-center p-4">
-                          <div className="text-sm italic">🔒 En train de déchiffrer...</div>
+                        <div className="space-y-2 p-4 text-left">
+                          <div className="text-sm italic">🔒 Image chiffrée</div>
+                          <div className="text-xs break-words bg-slate-100 text-slate-700 rounded px-3 py-2 font-mono overflow-x-auto">
+                            {message.encryptedContent.slice(0, 120)}...
+                          </div>
                         </div>
                       ) : message.decryptedContent && message.decryptedContent !== '[Erreur de déchiffrement]' ? (
                         <img
@@ -418,12 +435,15 @@ export default function Chat() {
                         </div>
                       )
                     ) : (
-                      <div>
+                      <div className="space-y-2">
                         {message.isDecrypting ? (
-                          <div className="text-sm italic">🔒 En train de déchiffrer...</div>
+                          <div className="text-sm italic">🔒 Message chiffré</div>
                         ) : (
-                          <div className="font-normal">{message.decryptedContent}</div>
+                          <div className="font-normal break-words">{message.decryptedContent}</div>
                         )}
+                        {message.isDecrypting ? (
+                          <div className="text-xs opacity-70">Déchiffrement en cours...</div>
+                        ) : null}
                         <div className="text-xs opacity-70 mt-1">
                           {new Date(message.timestamp).toLocaleTimeString()}
                         </div>
